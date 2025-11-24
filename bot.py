@@ -40,7 +40,7 @@ ZAEBAL_GIF_URL = os.getenv('ZAEBAL_GIF_URL', MUTE_GIF_URL)  # Специфичн
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env файле")
 
-# Хранилище голосов: {chat_id: {message_id: {'tishe': {user_id: timestamp}, 'zaebal': {user_id: timestamp}}}}
+# Хранилище голосов: {chat_id: {target_user_id: {'tishe': {voter_id: timestamp}, 'zaebal': {voter_id: timestamp}}}}
 votes: Dict[int, Dict[int, Dict[str, Dict[int, datetime]]]] = defaultdict(
     lambda: defaultdict(lambda: {'tishe': {}, 'zaebal': {}})
 )
@@ -91,18 +91,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(help_text)
 
 
-def cleanup_expired_votes(chat_id: int, message_id: int, vote_type: str) -> None:
+def cleanup_expired_votes(chat_id: int, target_user_id: int, vote_type: str) -> None:
     """Удаление просроченных голосов"""
     now = datetime.now()
     expired_voters = [
         voter_id
-        for voter_id, timestamp in votes[chat_id][message_id][vote_type].items()
+        for voter_id, timestamp in votes[chat_id][target_user_id][vote_type].items()
         if now - timestamp > VOTE_EXPIRATION
     ]
 
     for voter_id in expired_voters:
-        del votes[chat_id][message_id][vote_type][voter_id]
-        logger.info(f"Голос {vote_type} от {voter_id} за сообщение {message_id} истёк")
+        del votes[chat_id][target_user_id][vote_type][voter_id]
+        logger.info(f"Голос {vote_type} от {voter_id} за пользователя {target_user_id} истёк")
 
 
 async def can_vote_for_user(chat_id: int, target_user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -151,27 +151,25 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-    message_id = target_message.message_id
-
     # Очищаем просроченные голоса
-    cleanup_expired_votes(chat_id, message_id, 'tishe')
+    cleanup_expired_votes(chat_id, target_user_id, 'tishe')
 
     # Проверяем, не голосовал ли уже этот пользователь
-    if voter_id in votes[chat_id][message_id]['tishe']:
+    if voter_id in votes[chat_id][target_user_id]['tishe']:
         await update.message.reply_text("⚠️ Вы уже голосовали!")
         return
 
     # Добавляем голос с временной меткой
-    votes[chat_id][message_id]['tishe'][voter_id] = now
+    votes[chat_id][target_user_id]['tishe'][voter_id] = now
 
-    vote_count = len(votes[chat_id][message_id]['tishe'])
+    vote_count = len(votes[chat_id][target_user_id]['tishe'])
     logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= TISHE_VOTES_REQUIRED:
         try:
             # Устанавливаем кулдаун для всех кто голосовал
-            for voted_user_id in votes[chat_id][message_id]['tishe'].keys():
+            for voted_user_id in votes[chat_id][target_user_id]['tishe'].keys():
                 cooldown_key_for_voter = (voted_user_id, target_user_id)
                 vote_cooldowns[chat_id][cooldown_key_for_voter] = now
 
@@ -203,7 +201,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             }
 
             # Очищаем голоса
-            del votes[chat_id][message_id]
+            del votes[chat_id][target_user_id]
 
             await update.message.reply_text(
                 f"🔇 {target_username} не может отправлять медиа в течение 1 часа!\n"
@@ -270,27 +268,25 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-    message_id = target_message.message_id
-
     # Очищаем просроченные голоса
-    cleanup_expired_votes(chat_id, message_id, 'zaebal')
+    cleanup_expired_votes(chat_id, target_user_id, 'zaebal')
 
     # Проверяем, не голосовал ли уже этот пользователь
-    if voter_id in votes[chat_id][message_id]['zaebal']:
+    if voter_id in votes[chat_id][target_user_id]['zaebal']:
         await update.message.reply_text("⚠️ Вы уже голосовали!")
         return
 
     # Добавляем голос с временной меткой
-    votes[chat_id][message_id]['zaebal'][voter_id] = now
+    votes[chat_id][target_user_id]['zaebal'][voter_id] = now
 
-    vote_count = len(votes[chat_id][message_id]['zaebal'])
+    vote_count = len(votes[chat_id][target_user_id]['zaebal'])
     logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= ZAEBAL_VOTES_REQUIRED:
         try:
             # Устанавливаем кулдаун для всех кто голосовал
-            for voted_user_id in votes[chat_id][message_id]['zaebal'].keys():
+            for voted_user_id in votes[chat_id][target_user_id]['zaebal'].keys():
                 cooldown_key_for_voter = (voted_user_id, target_user_id)
                 vote_cooldowns[chat_id][cooldown_key_for_voter] = now
 
@@ -322,7 +318,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             }
 
             # Очищаем голоса
-            del votes[chat_id][message_id]
+            del votes[chat_id][target_user_id]
 
             await update.message.reply_text(
                 f"🔇 {target_username} замьючен на 1 час!\n"
