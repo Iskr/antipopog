@@ -167,15 +167,17 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Добавляем голос с временной меткой
     votes[chat_id][message_id]['tishe'][voter_id] = now
 
-    # Обновляем кулдаун
-    vote_cooldowns[chat_id][cooldown_key] = now
-
     vote_count = len(votes[chat_id][message_id]['tishe'])
     logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= TISHE_VOTES_REQUIRED:
         try:
+            # Устанавливаем кулдаун для всех кто голосовал
+            for voted_user_id in votes[chat_id][message_id]['tishe'].keys():
+                cooldown_key_for_voter = (voted_user_id, target_user_id)
+                vote_cooldowns[chat_id][cooldown_key_for_voter] = now
+
             # Запрещаем отправку медиа
             permissions = ChatPermissions(
                 can_send_messages=True,
@@ -284,15 +286,17 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Добавляем голос с временной меткой
     votes[chat_id][message_id]['zaebal'][voter_id] = now
 
-    # Обновляем кулдаун
-    vote_cooldowns[chat_id][cooldown_key] = now
-
     vote_count = len(votes[chat_id][message_id]['zaebal'])
     logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= ZAEBAL_VOTES_REQUIRED:
         try:
+            # Устанавливаем кулдаун для всех кто голосовал
+            for voted_user_id in votes[chat_id][message_id]['zaebal'].keys():
+                cooldown_key_for_voter = (voted_user_id, target_user_id)
+                vote_cooldowns[chat_id][cooldown_key_for_voter] = now
+
             # Полный мьют - запрещаем всё
             permissions = ChatPermissions(
                 can_send_messages=False,
