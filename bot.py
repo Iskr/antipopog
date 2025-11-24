@@ -3,8 +3,8 @@
 Telegram бот для модерации группового чата.
 
 Функционал:
-- /tishe - 3+ голосов = запрет медиа на 24 часа
-- /zaebal - 5+ голосов = полный мьют на 24 часа
+- /tishe - 5+ голосов = запрет медиа на 1 час
+- /zaebal - 5+ голосов = полный мьют на 1 час
 """
 
 import os
@@ -37,9 +37,9 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env файле")
 
-# Хранилище голосов: {chat_id: {message_id: {'tishe': set(user_ids), 'zaebal': set(user_ids)}}}
-votes: Dict[int, Dict[int, Dict[str, Set[int]]]] = defaultdict(
-    lambda: defaultdict(lambda: {'tishe': set(), 'zaebal': set()})
+# Хранилище голосов: {chat_id: {message_id: {'tishe': {user_id: timestamp}, 'zaebal': {user_id: timestamp}}}}
+votes: Dict[int, Dict[int, Dict[str, Dict[int, datetime]]]] = defaultdict(
+    lambda: defaultdict(lambda: {'tishe': {}, 'zaebal': {}})
 )
 
 # Хранилище активных ограничений: {chat_id: {user_id: {'type': str, 'until': datetime}}}
@@ -48,10 +48,15 @@ restrictions: Dict[int, Dict[int, Dict]] = defaultdict(dict)
 # Хранилище целевых пользователей (на кого можно голосовать): {chat_id: set(user_ids)}
 target_users: Dict[int, Set[int]] = defaultdict(set)
 
+# Хранилище кулдаунов голосования: {chat_id: {(voter_id, target_id): datetime}}
+vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
+
 # Константы
-TISHE_VOTES_REQUIRED = 3  # Количество голосов для запрета медиа
+TISHE_VOTES_REQUIRED = 5  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
-RESTRICTION_DURATION = timedelta(hours=24)  # Длительность ограничения
+RESTRICTION_DURATION = timedelta(hours=1)  # Длительность ограничения
+VOTE_EXPIRATION = timedelta(hours=1)  # Время жизни голоса
+VOTE_COOLDOWN = timedelta(hours=1)  # Кулдаун между голосами одного пользователя против другого
 
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -72,91 +77,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = """
 🤖 Бот для модерации чата
 
-Команды для голосования (в ответ на сообщение):
-• /tishe - Голосовать за запрет медиа (нужно 3 голоса)
+Команды (в ответ на сообщение):
+• /tishe - Голосовать за запрет медиа (нужно 5 голосов)
 • /zaebal - Голосовать за полный мьют (нужно 5 голосов)
 • /status - Проверить статус ограничений
 
-Команды для администраторов:
-• /target_add - Добавить пользователя в список для голосования
-• /target_remove - Убрать пользователя из списка
-• /target_list - Показать список целевых пользователей
-
-Ограничения действуют 24 часа.
+Правила:
+• Ограничения действуют 1 час
+• Голоса сгорают через 1 час, если не набран порог
+• Можно голосовать против одного пользователя раз в час
+• Нельзя голосовать за администраторов
     """
     await update.message.reply_text(help_text)
 
 
-async def target_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Добавить пользователя в список целевых (только для админов)"""
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Эта команда доступна только администраторам!")
-        return
+def cleanup_expired_votes(chat_id: int, message_id: int, vote_type: str) -> None:
+    """Удаление просроченных голосов"""
+    now = datetime.now()
+    expired_voters = [
+        voter_id
+        for voter_id, timestamp in votes[chat_id][message_id][vote_type].items()
+        if now - timestamp > VOTE_EXPIRATION
+    ]
 
-    if not update.message.reply_to_message:
-        await update.message.reply_text("⚠️ Ответьте на сообщение пользователя, которого хотите добавить!")
-        return
-
-    chat_id = update.effective_chat.id
-    target_user_id = update.message.reply_to_message.from_user.id
-    target_username = update.message.reply_to_message.from_user.first_name
-
-    # Добавляем пользователя в список
-    target_users[chat_id].add(target_user_id)
-
-    await update.message.reply_text(
-        f"✅ Пользователь {target_username} добавлен в список для голосования.\n"
-        f"Теперь на него можно использовать команды /tishe и /zaebal"
-    )
-    logger.info(f"Админ {update.effective_user.id} добавил {target_user_id} в целевые в чате {chat_id}")
+    for voter_id in expired_voters:
+        del votes[chat_id][message_id][vote_type][voter_id]
+        logger.info(f"Голос {vote_type} от {voter_id} за сообщение {message_id} истёк")
 
 
-async def target_remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Убрать пользователя из списка целевых (только для админов)"""
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Эта команда доступна только администраторам!")
-        return
-
-    if not update.message.reply_to_message:
-        await update.message.reply_text("⚠️ Ответьте на сообщение пользователя, которого хотите убрать!")
-        return
-
-    chat_id = update.effective_chat.id
-    target_user_id = update.message.reply_to_message.from_user.id
-    target_username = update.message.reply_to_message.from_user.first_name
-
-    # Убираем пользователя из списка
-    if target_user_id in target_users[chat_id]:
-        target_users[chat_id].remove(target_user_id)
-        await update.message.reply_text(
-            f"✅ Пользователь {target_username} убран из списка для голосования."
-        )
-        logger.info(f"Админ {update.effective_user.id} убрал {target_user_id} из целевых в чате {chat_id}")
-    else:
-        await update.message.reply_text(
-            f"⚠️ Пользователь {target_username} не был в списке."
-        )
-
-
-async def target_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показать список целевых пользователей"""
-    chat_id = update.effective_chat.id
-
-    if chat_id not in target_users or not target_users[chat_id]:
-        await update.message.reply_text("📋 Список целевых пользователей пуст.\n\nИспользуйте /target_add чтобы добавить.")
-        return
-
-    list_text = "📋 Пользователи, на которых можно голосовать:\n\n"
-
-    for user_id in target_users[chat_id]:
-        try:
-            user = await context.bot.get_chat_member(chat_id, user_id)
-            username = user.user.first_name
-            list_text += f"• {username} (ID: {user_id})\n"
-        except:
-            list_text += f"• ID: {user_id}\n"
-
-    await update.message.reply_text(list_text)
+async def can_vote_for_user(chat_id: int, target_user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверка, можно ли голосовать за пользователя (не админ)"""
+    try:
+        member = await context.bot.get_chat_member(chat_id, target_user_id)
+        return member.status not in ['creator', 'administrator']
+    except Exception as e:
+        logger.error(f"Ошибка при проверке статуса пользователя: {e}")
+        return True  # В случае ошибки разрешаем голосование
 
 
 async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -170,23 +126,46 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     target_message = update.message.reply_to_message
     target_user_id = target_message.from_user.id
     target_username = target_message.from_user.first_name
+    now = datetime.now()
 
     # Нельзя голосовать за самого себя
     if voter_id == target_user_id:
         await update.message.reply_text("❌ Нельзя голосовать за самого себя!")
         return
 
-    # Проверяем, что пользователь в списке целевых
-    if target_user_id not in target_users[chat_id]:
-        await update.message.reply_text(
-            f"❌ На пользователя {target_username} нельзя голосовать.\n"
-            f"Администратор должен добавить его в список командой /target_add"
-        )
+    # Проверяем, что пользователь не админ
+    if not await can_vote_for_user(chat_id, target_user_id, context):
+        await update.message.reply_text(f"❌ Нельзя голосовать за администраторов!")
         return
 
-    # Добавляем голос
+    # Проверяем кулдаун голосования
+    cooldown_key = (voter_id, target_user_id)
+    if cooldown_key in vote_cooldowns[chat_id]:
+        last_vote_time = vote_cooldowns[chat_id][cooldown_key]
+        time_left = VOTE_COOLDOWN - (now - last_vote_time)
+        if time_left.total_seconds() > 0:
+            minutes = int(time_left.total_seconds() // 60)
+            await update.message.reply_text(
+                f"⏳ Вы уже голосовали за {target_username}. "
+                f"Подождите ещё {minutes} мин."
+            )
+            return
+
     message_id = target_message.message_id
-    votes[chat_id][message_id]['tishe'].add(voter_id)
+
+    # Очищаем просроченные голоса
+    cleanup_expired_votes(chat_id, message_id, 'tishe')
+
+    # Проверяем, не голосовал ли уже этот пользователь
+    if voter_id in votes[chat_id][message_id]['tishe']:
+        await update.message.reply_text("⚠️ Вы уже голосовали!")
+        return
+
+    # Добавляем голос с временной меткой
+    votes[chat_id][message_id]['tishe'][voter_id] = now
+
+    # Обновляем кулдаун
+    vote_cooldowns[chat_id][cooldown_key] = now
 
     vote_count = len(votes[chat_id][message_id]['tishe'])
     logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
@@ -207,7 +186,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 can_send_other_messages=False,
             )
 
-            until_date = datetime.now() + RESTRICTION_DURATION
+            until_date = now + RESTRICTION_DURATION
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=target_user_id,
@@ -225,7 +204,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             del votes[chat_id][message_id]
 
             await update.message.reply_text(
-                f"🔇 {target_username} не может отправлять медиа в течение 24 часов!\n"
+                f"🔇 {target_username} не может отправлять медиа в течение 1 часа!\n"
                 f"Голосов набрано: {vote_count}/{TISHE_VOTES_REQUIRED}"
             )
             logger.info(f"Пользователь {target_user_id} получил запрет на медиа")
@@ -253,23 +232,46 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     target_message = update.message.reply_to_message
     target_user_id = target_message.from_user.id
     target_username = target_message.from_user.first_name
+    now = datetime.now()
 
     # Нельзя голосовать за самого себя
     if voter_id == target_user_id:
         await update.message.reply_text("❌ Нельзя голосовать за самого себя!")
         return
 
-    # Проверяем, что пользователь в списке целевых
-    if target_user_id not in target_users[chat_id]:
-        await update.message.reply_text(
-            f"❌ На пользователя {target_username} нельзя голосовать.\n"
-            f"Администратор должен добавить его в список командой /target_add"
-        )
+    # Проверяем, что пользователь не админ
+    if not await can_vote_for_user(chat_id, target_user_id, context):
+        await update.message.reply_text(f"❌ Нельзя голосовать за администраторов!")
         return
 
-    # Добавляем голос
+    # Проверяем кулдаун голосования
+    cooldown_key = (voter_id, target_user_id)
+    if cooldown_key in vote_cooldowns[chat_id]:
+        last_vote_time = vote_cooldowns[chat_id][cooldown_key]
+        time_left = VOTE_COOLDOWN - (now - last_vote_time)
+        if time_left.total_seconds() > 0:
+            minutes = int(time_left.total_seconds() // 60)
+            await update.message.reply_text(
+                f"⏳ Вы уже голосовали за {target_username}. "
+                f"Подождите ещё {minutes} мин."
+            )
+            return
+
     message_id = target_message.message_id
-    votes[chat_id][message_id]['zaebal'].add(voter_id)
+
+    # Очищаем просроченные голоса
+    cleanup_expired_votes(chat_id, message_id, 'zaebal')
+
+    # Проверяем, не голосовал ли уже этот пользователь
+    if voter_id in votes[chat_id][message_id]['zaebal']:
+        await update.message.reply_text("⚠️ Вы уже голосовали!")
+        return
+
+    # Добавляем голос с временной меткой
+    votes[chat_id][message_id]['zaebal'][voter_id] = now
+
+    # Обновляем кулдаун
+    vote_cooldowns[chat_id][cooldown_key] = now
 
     vote_count = len(votes[chat_id][message_id]['zaebal'])
     logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
@@ -290,7 +292,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 can_send_other_messages=False,
             )
 
-            until_date = datetime.now() + RESTRICTION_DURATION
+            until_date = now + RESTRICTION_DURATION
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=target_user_id,
@@ -308,7 +310,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             del votes[chat_id][message_id]
 
             await update.message.reply_text(
-                f"🔇 {target_username} замьючен на 24 часа!\n"
+                f"🔇 {target_username} замьючен на 1 час!\n"
                 f"Голосов набрано: {vote_count}/{ZAEBAL_VOTES_REQUIRED}"
             )
             logger.info(f"Пользователь {target_user_id} получил полный мьют")
@@ -381,9 +383,6 @@ def main() -> None:
     application.add_handler(CommandHandler("tishe", tishe_command))
     application.add_handler(CommandHandler("zaebal", zaebal_command))
     application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("target_add", target_add_command))
-    application.add_handler(CommandHandler("target_remove", target_remove_command))
-    application.add_handler(CommandHandler("target_list", target_list_command))
 
     # Запускаем бота
     logger.info("Бот запущен и готов к работе!")
