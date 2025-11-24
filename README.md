@@ -58,11 +58,20 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Откройте `.env` и вставьте токен вашего бота:
+Откройте `.env` и настройте параметры:
 
 ```env
 TELEGRAM_BOT_TOKEN=ваш_токен_от_BotFather
+
+# Опционально: URL гифки для отправки при успешном мьюте
+MUTE_GIF_URL=https://media.giphy.com/media/your-gif-id/giphy.gif
+
+# Или можно указать разные гифки для разных типов мьюта:
+# TISHE_GIF_URL=https://url-to-tishe-gif.gif
+# ZAEBAL_GIF_URL=https://url-to-zaebal-gif.gif
 ```
+
+**Примечание:** Гифка отправляется в чат при успешном применении ограничения. Это опционально - если не указать URL, бот будет работать без гифок.
 
 ### 4. Добавление бота в группу
 

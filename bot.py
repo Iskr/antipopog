@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 # Загрузка переменных окружения
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+MUTE_GIF_URL = os.getenv('MUTE_GIF_URL')  # Общая гифка для обоих типов мьюта
+TISHE_GIF_URL = os.getenv('TISHE_GIF_URL', MUTE_GIF_URL)  # Специфичная для /tishe
+ZAEBAL_GIF_URL = os.getenv('ZAEBAL_GIF_URL', MUTE_GIF_URL)  # Специфичная для /zaebal
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env файле")
@@ -207,6 +210,17 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"🔇 {target_username} не может отправлять медиа в течение 1 часа!\n"
                 f"Голосов набрано: {vote_count}/{TISHE_VOTES_REQUIRED}"
             )
+
+            # Отправляем гифку, если указана
+            if TISHE_GIF_URL:
+                try:
+                    await context.bot.send_animation(
+                        chat_id=chat_id,
+                        animation=TISHE_GIF_URL
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке гифки: {e}")
+
             logger.info(f"Пользователь {target_user_id} получил запрет на медиа")
 
         except Exception as e:
@@ -313,6 +327,17 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"🔇 {target_username} замьючен на 1 час!\n"
                 f"Голосов набрано: {vote_count}/{ZAEBAL_VOTES_REQUIRED}"
             )
+
+            # Отправляем гифку, если указана
+            if ZAEBAL_GIF_URL:
+                try:
+                    await context.bot.send_animation(
+                        chat_id=chat_id,
+                        animation=ZAEBAL_GIF_URL
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке гифки: {e}")
+
             logger.info(f"Пользователь {target_user_id} получил полный мьют")
 
         except Exception as e:
