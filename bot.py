@@ -45,10 +45,26 @@ votes: Dict[int, Dict[int, Dict[str, Set[int]]]] = defaultdict(
 # Хранилище активных ограничений: {chat_id: {user_id: {'type': str, 'until': datetime}}}
 restrictions: Dict[int, Dict[int, Dict]] = defaultdict(dict)
 
+# Хранилище целевых пользователей (на кого можно голосовать): {chat_id: set(user_ids)}
+target_users: Dict[int, Set[int]] = defaultdict(set)
+
 # Константы
 TISHE_VOTES_REQUIRED = 3  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
 RESTRICTION_DURATION = timedelta(hours=24)  # Длительность ограничения
+
+
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверка, является ли пользователь администратором чата"""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status in ['creator', 'administrator']
+    except Exception as e:
+        logger.error(f"Ошибка при проверке прав администратора: {e}")
+        return False
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -56,14 +72,91 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = """
 🤖 Бот для модерации чата
 
-Команды (в ответ на сообщение):
+Команды для голосования (в ответ на сообщение):
 • /tishe - Голосовать за запрет медиа (нужно 3 голоса)
 • /zaebal - Голосовать за полный мьют (нужно 5 голосов)
 • /status - Проверить статус ограничений
 
+Команды для администраторов:
+• /target_add - Добавить пользователя в список для голосования
+• /target_remove - Убрать пользователя из списка
+• /target_list - Показать список целевых пользователей
+
 Ограничения действуют 24 часа.
     """
     await update.message.reply_text(help_text)
+
+
+async def target_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Добавить пользователя в список целевых (только для админов)"""
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Эта команда доступна только администраторам!")
+        return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Ответьте на сообщение пользователя, которого хотите добавить!")
+        return
+
+    chat_id = update.effective_chat.id
+    target_user_id = update.message.reply_to_message.from_user.id
+    target_username = update.message.reply_to_message.from_user.first_name
+
+    # Добавляем пользователя в список
+    target_users[chat_id].add(target_user_id)
+
+    await update.message.reply_text(
+        f"✅ Пользователь {target_username} добавлен в список для голосования.\n"
+        f"Теперь на него можно использовать команды /tishe и /zaebal"
+    )
+    logger.info(f"Админ {update.effective_user.id} добавил {target_user_id} в целевые в чате {chat_id}")
+
+
+async def target_remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Убрать пользователя из списка целевых (только для админов)"""
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Эта команда доступна только администраторам!")
+        return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Ответьте на сообщение пользователя, которого хотите убрать!")
+        return
+
+    chat_id = update.effective_chat.id
+    target_user_id = update.message.reply_to_message.from_user.id
+    target_username = update.message.reply_to_message.from_user.first_name
+
+    # Убираем пользователя из списка
+    if target_user_id in target_users[chat_id]:
+        target_users[chat_id].remove(target_user_id)
+        await update.message.reply_text(
+            f"✅ Пользователь {target_username} убран из списка для голосования."
+        )
+        logger.info(f"Админ {update.effective_user.id} убрал {target_user_id} из целевых в чате {chat_id}")
+    else:
+        await update.message.reply_text(
+            f"⚠️ Пользователь {target_username} не был в списке."
+        )
+
+
+async def target_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать список целевых пользователей"""
+    chat_id = update.effective_chat.id
+
+    if chat_id not in target_users or not target_users[chat_id]:
+        await update.message.reply_text("📋 Список целевых пользователей пуст.\n\nИспользуйте /target_add чтобы добавить.")
+        return
+
+    list_text = "📋 Пользователи, на которых можно голосовать:\n\n"
+
+    for user_id in target_users[chat_id]:
+        try:
+            user = await context.bot.get_chat_member(chat_id, user_id)
+            username = user.user.first_name
+            list_text += f"• {username} (ID: {user_id})\n"
+        except:
+            list_text += f"• ID: {user_id}\n"
+
+    await update.message.reply_text(list_text)
 
 
 async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -81,6 +174,14 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Нельзя голосовать за самого себя
     if voter_id == target_user_id:
         await update.message.reply_text("❌ Нельзя голосовать за самого себя!")
+        return
+
+    # Проверяем, что пользователь в списке целевых
+    if target_user_id not in target_users[chat_id]:
+        await update.message.reply_text(
+            f"❌ На пользователя {target_username} нельзя голосовать.\n"
+            f"Администратор должен добавить его в список командой /target_add"
+        )
         return
 
     # Добавляем голос
@@ -156,6 +257,14 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Нельзя голосовать за самого себя
     if voter_id == target_user_id:
         await update.message.reply_text("❌ Нельзя голосовать за самого себя!")
+        return
+
+    # Проверяем, что пользователь в списке целевых
+    if target_user_id not in target_users[chat_id]:
+        await update.message.reply_text(
+            f"❌ На пользователя {target_username} нельзя голосовать.\n"
+            f"Администратор должен добавить его в список командой /target_add"
+        )
         return
 
     # Добавляем голос
@@ -272,6 +381,9 @@ def main() -> None:
     application.add_handler(CommandHandler("tishe", tishe_command))
     application.add_handler(CommandHandler("zaebal", zaebal_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("target_add", target_add_command))
+    application.add_handler(CommandHandler("target_remove", target_remove_command))
+    application.add_handler(CommandHandler("target_list", target_list_command))
 
     # Запускаем бота
     logger.info("Бот запущен и готов к работе!")
