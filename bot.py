@@ -9,7 +9,7 @@ Telegram бот для модерации группового чата.
 
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from typing import Dict, Optional
 from dotenv import load_dotenv
@@ -93,7 +93,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def cleanup_expired_votes(chat_id: int, target_user_id: int, vote_type: str) -> None:
     """Удаление просроченных голосов"""
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     expired_voters = [
         voter_id
         for voter_id, timestamp in votes[chat_id][target_user_id][vote_type].items()
@@ -126,7 +126,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     target_message = update.message.reply_to_message
     target_user_id = target_message.from_user.id
     target_username = target_message.from_user.first_name
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     # Нельзя голосовать за самого себя
     if voter_id == target_user_id:
@@ -243,7 +243,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     target_message = update.message.reply_to_message
     target_user_id = target_message.from_user.id
     target_username = target_message.from_user.first_name
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     # Нельзя голосовать за самого себя
     if voter_id == target_user_id:
@@ -358,7 +358,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     status_text = "📋 Активные ограничения:\n\n"
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     for user_id, restriction in list(restrictions[chat_id].items()):
         if restriction['until'] < now:
