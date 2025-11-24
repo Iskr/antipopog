@@ -11,7 +11,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict, Set, Optional
+from typing import Dict, Optional
 from dotenv import load_dotenv
 
 from telegram import Update, ChatPermissions
@@ -47,9 +47,6 @@ votes: Dict[int, Dict[int, Dict[str, Dict[int, datetime]]]] = defaultdict(
 
 # Хранилище активных ограничений: {chat_id: {user_id: {'type': str, 'until': datetime}}}
 restrictions: Dict[int, Dict[int, Dict]] = defaultdict(dict)
-
-# Хранилище целевых пользователей (на кого можно голосовать): {chat_id: set(user_ids)}
-target_users: Dict[int, Set[int]] = defaultdict(set)
 
 # Хранилище кулдаунов голосования: {chat_id: {(voter_id, target_id): datetime}}
 vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
