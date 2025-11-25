@@ -350,40 +350,78 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показать текущие активные ограничения"""
+    """Показать текущие активные ограничения и голосования"""
     chat_id = update.effective_chat.id
-
-    if chat_id not in restrictions or not restrictions[chat_id]:
-        await update.message.reply_text("✅ Нет активных ограничений")
-        return
-
-    status_text = "📋 Активные ограничения:\n\n"
     now = datetime.now(timezone.utc)
 
-    for user_id, restriction in list(restrictions[chat_id].items()):
-        if restriction['until'] < now:
-            # Ограничение истекло, удаляем
-            del restrictions[chat_id][user_id]
-            continue
+    # Проверяем ограничения
+    has_restrictions = False
+    restrictions_text = "📋 Активные ограничения:\n\n"
 
-        try:
-            user = await context.bot.get_chat_member(chat_id, user_id)
-            username = user.user.first_name
-        except:
-            username = f"ID:{user_id}"
+    if chat_id in restrictions and restrictions[chat_id]:
+        for user_id, restriction in list(restrictions[chat_id].items()):
+            if restriction['until'] < now:
+                # Ограничение истекло, удаляем
+                del restrictions[chat_id][user_id]
+                continue
 
-        restriction_type = "🔇 Полный мьют" if restriction['type'] == 'full_mute' else "🔕 Запрет медиа"
-        time_left = restriction['until'] - now
-        hours = int(time_left.total_seconds() // 3600)
-        minutes = int((time_left.total_seconds() % 3600) // 60)
+            try:
+                user = await context.bot.get_chat_member(chat_id, user_id)
+                username = user.user.first_name
+            except:
+                username = f"ID:{user_id}"
 
-        status_text += f"{restriction_type}: {username}\n"
-        status_text += f"  Осталось: {hours}ч {minutes}м\n\n"
+            restriction_type = "🔇 Полный мьют" if restriction['type'] == 'full_mute' else "🔕 Запрет медиа"
+            time_left = restriction['until'] - now
+            hours = int(time_left.total_seconds() // 3600)
+            minutes = int((time_left.total_seconds() % 3600) // 60)
 
-    if status_text == "📋 Активные ограничения:\n\n":
-        status_text = "✅ Нет активных ограничений"
+            restrictions_text += f"{restriction_type}: {username}\n"
+            restrictions_text += f"  Осталось: {hours}ч {minutes}м\n\n"
+            has_restrictions = True
 
-    await update.message.reply_text(status_text)
+    # Проверяем активные голосования
+    has_votes = False
+    votes_text = "📊 Активные голосования:\n\n"
+
+    if chat_id in votes and votes[chat_id]:
+        for target_user_id, vote_types in votes[chat_id].items():
+            # Очищаем просроченные голоса
+            cleanup_expired_votes(chat_id, target_user_id, 'tishe')
+            cleanup_expired_votes(chat_id, target_user_id, 'zaebal')
+
+            tishe_count = len(vote_types['tishe'])
+            zaebal_count = len(vote_types['zaebal'])
+
+            # Показываем только если есть активные голоса
+            if tishe_count > 0 or zaebal_count > 0:
+                try:
+                    user = await context.bot.get_chat_member(chat_id, target_user_id)
+                    username = user.user.first_name
+                except:
+                    username = f"ID:{target_user_id}"
+
+                votes_text += f"• За {username}:\n"
+                if tishe_count > 0:
+                    votes_text += f"  /tishe: {tishe_count}/{TISHE_VOTES_REQUIRED} голосов\n"
+                if zaebal_count > 0:
+                    votes_text += f"  /zaebal: {zaebal_count}/{ZAEBAL_VOTES_REQUIRED} голосов\n"
+                votes_text += "\n"
+                has_votes = True
+
+    # Формируем итоговое сообщение
+    if not has_restrictions and not has_votes:
+        final_text = "✅ Нет активных ограничений и голосований"
+    else:
+        final_text = ""
+        if has_restrictions:
+            final_text += restrictions_text
+        if has_votes:
+            if has_restrictions:
+                final_text += "➖➖➖➖➖➖➖➖➖\n\n"
+            final_text += votes_text
+
+    await update.message.reply_text(final_text.strip())
 
 
 async def cleanup_old_votes(context: ContextTypes.DEFAULT_TYPE) -> None:
