@@ -48,7 +48,7 @@ votes: Dict[int, Dict[int, Dict[str, Dict[int, datetime]]]] = defaultdict(
 # Хранилище активных ограничений: {chat_id: {user_id: {'type': str, 'until': datetime}}}
 restrictions: Dict[int, Dict[int, Dict]] = defaultdict(dict)
 
-# Хранилище кулдаунов голосования: {chat_id: {(voter_id, target_id): datetime}}
+# Хранилище кулдаунов голосования: {chat_id: {(voter_id, target_id, vote_type): datetime}}
 vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
 
 # Константы
@@ -85,7 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 Правила:
 • Ограничения действуют 1 час
 • Голоса сгорают через 1 час, если не набран порог
-• Можно голосовать против одного пользователя раз в час
+• Кулдауны раздельные для /tishe и /zaebal (1 час после успешного мьюта)
 • Нельзя голосовать за администраторов
     """
     await update.message.reply_text(help_text)
@@ -138,15 +138,15 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"❌ Нельзя голосовать за администраторов!")
         return
 
-    # Проверяем кулдаун голосования
-    cooldown_key = (voter_id, target_user_id)
+    # Проверяем кулдаун голосования для /tishe
+    cooldown_key = (voter_id, target_user_id, 'tishe')
     if cooldown_key in vote_cooldowns[chat_id]:
         last_vote_time = vote_cooldowns[chat_id][cooldown_key]
         time_left = VOTE_COOLDOWN - (now - last_vote_time)
         if time_left.total_seconds() > 0:
             minutes = int(time_left.total_seconds() // 60)
             await update.message.reply_text(
-                f"⏳ Вы уже голосовали за {target_username}. "
+                f"⏳ Вы уже голосовали /tishe за {target_username}. "
                 f"Подождите ещё {minutes} мин."
             )
             return
@@ -170,7 +170,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             # Устанавливаем кулдаун для всех кто голосовал
             for voted_user_id in votes[chat_id][target_user_id]['tishe'].keys():
-                cooldown_key_for_voter = (voted_user_id, target_user_id)
+                cooldown_key_for_voter = (voted_user_id, target_user_id, 'tishe')
                 vote_cooldowns[chat_id][cooldown_key_for_voter] = now
 
             # Запрещаем отправку медиа
@@ -255,15 +255,15 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"❌ Нельзя голосовать за администраторов!")
         return
 
-    # Проверяем кулдаун голосования
-    cooldown_key = (voter_id, target_user_id)
+    # Проверяем кулдаун голосования для /zaebal
+    cooldown_key = (voter_id, target_user_id, 'zaebal')
     if cooldown_key in vote_cooldowns[chat_id]:
         last_vote_time = vote_cooldowns[chat_id][cooldown_key]
         time_left = VOTE_COOLDOWN - (now - last_vote_time)
         if time_left.total_seconds() > 0:
             minutes = int(time_left.total_seconds() // 60)
             await update.message.reply_text(
-                f"⏳ Вы уже голосовали за {target_username}. "
+                f"⏳ Вы уже голосовали /zaebal за {target_username}. "
                 f"Подождите ещё {minutes} мин."
             )
             return
@@ -287,7 +287,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             # Устанавливаем кулдаун для всех кто голосовал
             for voted_user_id in votes[chat_id][target_user_id]['zaebal'].keys():
-                cooldown_key_for_voter = (voted_user_id, target_user_id)
+                cooldown_key_for_voter = (voted_user_id, target_user_id, 'zaebal')
                 vote_cooldowns[chat_id][cooldown_key_for_voter] = now
 
             # Полный мьют - запрещаем всё
