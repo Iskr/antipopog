@@ -55,7 +55,7 @@ vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
 TISHE_VOTES_REQUIRED = 5  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
 RESTRICTION_DURATION = timedelta(hours=1)  # Длительность ограничения
-VOTE_EXPIRATION = timedelta(hours=1)  # Время жизни голоса
+VOTE_EXPIRATION = timedelta(hours=2)  # Время жизни голоса
 VOTE_COOLDOWN = timedelta(hours=1)  # Кулдаун между голосами одного пользователя против другого
 
 
@@ -84,7 +84,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 Правила:
 • Ограничения действуют 1 час
-• Голоса сгорают через 1 час, если не набран порог
+• Голоса сгорают через 2 часа, если не набран порог
 • Кулдауны раздельные для /tishe и /zaebal (1 час после успешного мьюта)
 • Нельзя голосовать за администраторов
     """
