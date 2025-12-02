@@ -3,8 +3,8 @@
 Telegram бот для модерации группового чата.
 
 Функционал:
-- /tishe - 5+ голосов = запрет медиа на 1 час
-- /zaebal - 5+ голосов = полный мьют на 1 час
+- /tishe - 5+ голосов = запрет медиа на 3 часа
+- /zaebal - 5+ голосов = полный мьют на 3 часа
 """
 
 import os
@@ -54,8 +54,8 @@ vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
 # Константы
 TISHE_VOTES_REQUIRED = 5  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
-RESTRICTION_DURATION = timedelta(hours=1)  # Длительность ограничения
-VOTE_EXPIRATION = timedelta(hours=2)  # Время жизни голоса
+RESTRICTION_DURATION = timedelta(hours=3)  # Длительность ограничения
+VOTE_EXPIRATION = timedelta(hours=6)  # Время жизни голоса
 VOTE_COOLDOWN = timedelta(hours=1)  # Кулдаун между голосами одного пользователя против другого
 
 
@@ -83,8 +83,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 • /status - Проверить статус ограничений
 
 Правила:
-• Ограничения действуют 1 час
-• Голоса сгорают через 2 часа, если не набран порог
+• Ограничения действуют 3 часа
+• Голоса сгорают через 6 часов, если не набран порог
 • Кулдауны раздельные для /tishe и /zaebal (1 час после успешного мьюта)
 • Нельзя голосовать за администраторов
     """
@@ -204,7 +204,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             del votes[chat_id][target_user_id]
 
             await update.message.reply_text(
-                f"🔇 {target_username} не может отправлять медиа в течение 1 часа!\n"
+                f"🔇 {target_username} не может отправлять медиа в течение 3 часов!\n"
                 f"Голосов набрано: {vote_count}/{TISHE_VOTES_REQUIRED}"
             )
 
@@ -321,7 +321,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             del votes[chat_id][target_user_id]
 
             await update.message.reply_text(
-                f"🔇 {target_username} замьючен на 1 час!\n"
+                f"🔇 {target_username} замьючен на 3 часа!\n"
                 f"Голосов набрано: {vote_count}/{ZAEBAL_VOTES_REQUIRED}"
             )
 
