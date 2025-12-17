@@ -85,7 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 Правила:
 • Ограничения действуют 3 часа
 • Голоса сгорают через 6 часов, если не набран порог
-• Кулдауны раздельные для /tishe и /zaebal (1 час после успешного мьюта)
+• Кулдаун 1 час после голосования, сбрасывается при успешном мьюте
 • Нельзя голосовать за администраторов
     """
     await update.message.reply_text(help_text)
@@ -162,16 +162,20 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Добавляем голос с временной меткой
     votes[chat_id][target_user_id]['tishe'][voter_id] = now
 
+    # Устанавливаем кулдаун при голосовании
+    vote_cooldowns[chat_id][cooldown_key] = now
+
     vote_count = len(votes[chat_id][target_user_id]['tishe'])
     logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= TISHE_VOTES_REQUIRED:
         try:
-            # Устанавливаем кулдаун для всех кто голосовал
+            # Сбрасываем кулдаун для всех кто голосовал (награда за успешный мьют)
             for voted_user_id in votes[chat_id][target_user_id]['tishe'].keys():
                 cooldown_key_for_voter = (voted_user_id, target_user_id, 'tishe')
-                vote_cooldowns[chat_id][cooldown_key_for_voter] = now
+                if cooldown_key_for_voter in vote_cooldowns[chat_id]:
+                    del vote_cooldowns[chat_id][cooldown_key_for_voter]
 
             # Запрещаем отправку медиа
             permissions = ChatPermissions(
@@ -279,16 +283,20 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Добавляем голос с временной меткой
     votes[chat_id][target_user_id]['zaebal'][voter_id] = now
 
+    # Устанавливаем кулдаун при голосовании
+    vote_cooldowns[chat_id][cooldown_key] = now
+
     vote_count = len(votes[chat_id][target_user_id]['zaebal'])
     logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= ZAEBAL_VOTES_REQUIRED:
         try:
-            # Устанавливаем кулдаун для всех кто голосовал
+            # Сбрасываем кулдаун для всех кто голосовал (награда за успешный мьют)
             for voted_user_id in votes[chat_id][target_user_id]['zaebal'].keys():
                 cooldown_key_for_voter = (voted_user_id, target_user_id, 'zaebal')
-                vote_cooldowns[chat_id][cooldown_key_for_voter] = now
+                if cooldown_key_for_voter in vote_cooldowns[chat_id]:
+                    del vote_cooldowns[chat_id][cooldown_key_for_voter]
 
             # Полный мьют - запрещаем всё
             permissions = ChatPermissions(
