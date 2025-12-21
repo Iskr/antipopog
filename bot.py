@@ -8,10 +8,12 @@ Telegram бот для модерации группового чата.
 """
 
 import os
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from typing import Dict, Optional
+from pathlib import Path
 from dotenv import load_dotenv
 
 from telegram import Update, ChatPermissions
@@ -54,9 +56,127 @@ vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
 # Константы
 TISHE_VOTES_REQUIRED = 5  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
-RESTRICTION_DURATION = timedelta(hours=3)  # Длительность ограничения
+RESTRICTION_DURATION = timedelta(hours=3)  # Базовая длительность ограничения
 VOTE_EXPIRATION = timedelta(hours=6)  # Время жизни голоса
 VOTE_COOLDOWN = timedelta(hours=1)  # Кулдаун между голосами одного пользователя против другого
+BAN_INCREMENT = timedelta(minutes=5)  # Увеличение времени бана за каждый предыдущий бан
+DATA_FILE = Path(__file__).parent / "ban_data.json"  # Файл для хранения данных
+
+
+# Хранилище истории банов: {chat_id: {user_id: {"count": int, "username": str}}}
+ban_history: Dict[int, Dict[int, Dict]] = defaultdict(dict)
+
+
+def load_data() -> None:
+    """Загрузка всех данных из файла"""
+    global ban_history, votes, vote_cooldowns
+    try:
+        if DATA_FILE.exists():
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+                # Загружаем историю банов
+                for chat_id_str, users in data.get('ban_history', {}).items():
+                    chat_id = int(chat_id_str)
+                    for user_id_str, user_data in users.items():
+                        user_id = int(user_id_str)
+                        ban_history[chat_id][user_id] = user_data
+
+                # Загружаем голоса (с конвертацией datetime)
+                for chat_id_str, targets in data.get('votes', {}).items():
+                    chat_id = int(chat_id_str)
+                    for target_id_str, vote_types in targets.items():
+                        target_id = int(target_id_str)
+                        for vote_type in ['tishe', 'zaebal']:
+                            if vote_type in vote_types:
+                                for voter_id_str, timestamp_str in vote_types[vote_type].items():
+                                    voter_id = int(voter_id_str)
+                                    timestamp = datetime.fromisoformat(timestamp_str)
+                                    votes[chat_id][target_id][vote_type][voter_id] = timestamp
+
+                # Загружаем кулдауны (с конвертацией ключей и datetime)
+                for chat_id_str, cooldowns in data.get('vote_cooldowns', {}).items():
+                    chat_id = int(chat_id_str)
+                    for key_str, timestamp_str in cooldowns.items():
+                        # Ключ в формате "voter_id:target_id:vote_type"
+                        parts = key_str.split(':')
+                        voter_id = int(parts[0])
+                        target_id = int(parts[1])
+                        vote_type = parts[2]
+                        timestamp = datetime.fromisoformat(timestamp_str)
+                        vote_cooldowns[chat_id][(voter_id, target_id, vote_type)] = timestamp
+
+            logger.info(f"Загружены данные из {DATA_FILE}")
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке данных: {e}")
+
+
+def save_data() -> None:
+    """Сохранение всех данных в файл"""
+    try:
+        # Подготавливаем голоса для сериализации
+        votes_serializable = {}
+        for chat_id, targets in votes.items():
+            votes_serializable[str(chat_id)] = {}
+            for target_id, vote_types in targets.items():
+                votes_serializable[str(chat_id)][str(target_id)] = {}
+                for vote_type in ['tishe', 'zaebal']:
+                    if vote_types.get(vote_type):
+                        votes_serializable[str(chat_id)][str(target_id)][vote_type] = {
+                            str(voter_id): timestamp.isoformat()
+                            for voter_id, timestamp in vote_types[vote_type].items()
+                        }
+
+        # Подготавливаем кулдауны для сериализации
+        cooldowns_serializable = {}
+        for chat_id, cooldowns in vote_cooldowns.items():
+            cooldowns_serializable[str(chat_id)] = {}
+            for (voter_id, target_id, vote_type), timestamp in cooldowns.items():
+                key = f"{voter_id}:{target_id}:{vote_type}"
+                cooldowns_serializable[str(chat_id)][key] = timestamp.isoformat()
+
+        data = {
+            'ban_history': {
+                str(chat_id): {
+                    str(user_id): user_data
+                    for user_id, user_data in users.items()
+                }
+                for chat_id, users in ban_history.items()
+            },
+            'votes': votes_serializable,
+            'vote_cooldowns': cooldowns_serializable
+        }
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info(f"Данные сохранены в {DATA_FILE}")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении данных: {e}")
+
+
+def get_ban_count(chat_id: int, user_id: int) -> int:
+    """Получить количество банов пользователя"""
+    if user_id in ban_history[chat_id]:
+        return ban_history[chat_id][user_id].get('count', 0)
+    return 0
+
+
+def increment_ban_count(chat_id: int, user_id: int, username: str) -> int:
+    """Увеличить счётчик банов и вернуть новое значение"""
+    if user_id not in ban_history[chat_id]:
+        ban_history[chat_id][user_id] = {'count': 0, 'username': username}
+
+    ban_history[chat_id][user_id]['count'] += 1
+    ban_history[chat_id][user_id]['username'] = username  # Обновляем имя
+    save_data()
+    return ban_history[chat_id][user_id]['count']
+
+
+def get_restriction_duration(ban_count: int) -> timedelta:
+    """Рассчитать длительность бана на основе количества предыдущих банов"""
+    # ban_count - это уже обновлённый счётчик (после текущего бана)
+    # Первый бан: 3 часа, второй: 3 часа 5 минут, третий: 3 часа 10 минут и т.д.
+    extra_time = BAN_INCREMENT * (ban_count - 1)
+    return RESTRICTION_DURATION + extra_time
 
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -80,10 +200,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 Команды (в ответ на сообщение):
 • /tishe - Голосовать за запрет медиа (нужно 5 голосов)
 • /zaebal - Голосовать за полный мьют (нужно 5 голосов)
-• /status - Проверить статус ограничений
+• /status - Проверить статус и статистику нарушений
 
 Правила:
-• Ограничения действуют 3 часа
+• Базовое ограничение: 3 часа
+• Каждый следующий бан: +5 минут к времени
 • Голоса сгорают через 6 часов, если не набран порог
 • Кулдаун 1 час после голосования, сбрасывается при успешном мьюте
 • Нельзя голосовать за администраторов
@@ -165,6 +286,9 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Устанавливаем кулдаун при голосовании
     vote_cooldowns[chat_id][cooldown_key] = now
 
+    # Сохраняем данные
+    save_data()
+
     vote_count = len(votes[chat_id][target_user_id]['tishe'])
     logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
@@ -176,6 +300,10 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 cooldown_key_for_voter = (voted_user_id, target_user_id, 'tishe')
                 if cooldown_key_for_voter in vote_cooldowns[chat_id]:
                     del vote_cooldowns[chat_id][cooldown_key_for_voter]
+
+            # Увеличиваем счётчик банов и получаем длительность
+            ban_count = increment_ban_count(chat_id, target_user_id, target_username)
+            restriction_duration = get_restriction_duration(ban_count)
 
             # Запрещаем отправку медиа
             permissions = ChatPermissions(
@@ -190,7 +318,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 can_send_other_messages=False,
             )
 
-            until_date = now + RESTRICTION_DURATION
+            until_date = now + restriction_duration
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=target_user_id,
@@ -207,9 +335,16 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Очищаем голоса
             del votes[chat_id][target_user_id]
 
+            # Форматируем длительность
+            hours = int(restriction_duration.total_seconds() // 3600)
+            minutes = int((restriction_duration.total_seconds() % 3600) // 60)
+            duration_text = f"{hours}ч" if minutes == 0 else f"{hours}ч {minutes}м"
+            extra_text = f" (+{(ban_count-1)*5}м)" if ban_count > 1 else ""
+
             await update.message.reply_text(
-                f"🔇 {target_username} не может отправлять медиа в течение 3 часов!\n"
-                f"Голосов набрано: {vote_count}/{TISHE_VOTES_REQUIRED}"
+                f"🔇 {target_username} не может отправлять медиа в течение {duration_text}{extra_text}!\n"
+                f"Голосов набрано: {vote_count}/{TISHE_VOTES_REQUIRED}\n"
+                f"Нарушений всего: {ban_count}"
             )
 
             # Отправляем гифку, если указана
@@ -222,7 +357,7 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 except Exception as e:
                     logger.error(f"Ошибка при отправке гифки: {e}")
 
-            logger.info(f"Пользователь {target_user_id} получил запрет на медиа")
+            logger.info(f"Пользователь {target_user_id} получил запрет на медиа (бан #{ban_count})")
 
         except Exception as e:
             logger.error(f"Ошибка при ограничении пользователя: {e}")
@@ -286,6 +421,9 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Устанавливаем кулдаун при голосовании
     vote_cooldowns[chat_id][cooldown_key] = now
 
+    # Сохраняем данные
+    save_data()
+
     vote_count = len(votes[chat_id][target_user_id]['zaebal'])
     logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
@@ -297,6 +435,10 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 cooldown_key_for_voter = (voted_user_id, target_user_id, 'zaebal')
                 if cooldown_key_for_voter in vote_cooldowns[chat_id]:
                     del vote_cooldowns[chat_id][cooldown_key_for_voter]
+
+            # Увеличиваем счётчик банов и получаем длительность
+            ban_count = increment_ban_count(chat_id, target_user_id, target_username)
+            restriction_duration = get_restriction_duration(ban_count)
 
             # Полный мьют - запрещаем всё
             permissions = ChatPermissions(
@@ -311,7 +453,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 can_send_other_messages=False,
             )
 
-            until_date = now + RESTRICTION_DURATION
+            until_date = now + restriction_duration
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=target_user_id,
@@ -328,9 +470,16 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Очищаем голоса
             del votes[chat_id][target_user_id]
 
+            # Форматируем длительность
+            hours = int(restriction_duration.total_seconds() // 3600)
+            minutes = int((restriction_duration.total_seconds() % 3600) // 60)
+            duration_text = f"{hours}ч" if minutes == 0 else f"{hours}ч {minutes}м"
+            extra_text = f" (+{(ban_count-1)*5}м)" if ban_count > 1 else ""
+
             await update.message.reply_text(
-                f"🔇 {target_username} замьючен на 3 часа!\n"
-                f"Голосов набрано: {vote_count}/{ZAEBAL_VOTES_REQUIRED}"
+                f"🔇 {target_username} замьючен на {duration_text}{extra_text}!\n"
+                f"Голосов набрано: {vote_count}/{ZAEBAL_VOTES_REQUIRED}\n"
+                f"Нарушений всего: {ban_count}"
             )
 
             # Отправляем гифку, если указана
@@ -343,7 +492,7 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 except Exception as e:
                     logger.error(f"Ошибка при отправке гифки: {e}")
 
-            logger.info(f"Пользователь {target_user_id} получил полный мьют")
+            logger.info(f"Пользователь {target_user_id} получил полный мьют (бан #{ban_count})")
 
         except Exception as e:
             logger.error(f"Ошибка при мьюте пользователя: {e}")
@@ -417,9 +566,33 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 votes_text += "\n"
                 has_votes = True
 
+    # Проверяем историю банов
+    has_ban_history = False
+    ban_history_text = "📈 Статистика нарушений:\n\n"
+
+    if chat_id in ban_history and ban_history[chat_id]:
+        # Сортируем по количеству нарушений (больше = выше)
+        sorted_users = sorted(
+            ban_history[chat_id].items(),
+            key=lambda x: x[1].get('count', 0),
+            reverse=True
+        )
+
+        for user_id, user_data in sorted_users:
+            count = user_data.get('count', 0)
+            if count > 0:
+                username = user_data.get('username', f"ID:{user_id}")
+                # Рассчитываем доп. время для следующего бана
+                next_extra = count * 5  # минут
+                ban_history_text += f"• {username}: {count} нарушений"
+                if count > 0:
+                    ban_history_text += f" (следующий бан: +{next_extra}м)"
+                ban_history_text += "\n"
+                has_ban_history = True
+
     # Формируем итоговое сообщение
-    if not has_restrictions and not has_votes:
-        final_text = "✅ Нет активных ограничений и голосований"
+    if not has_restrictions and not has_votes and not has_ban_history:
+        final_text = "✅ Нет активных ограничений, голосований и истории нарушений"
     else:
         final_text = ""
         if has_restrictions:
@@ -428,6 +601,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if has_restrictions:
                 final_text += "➖➖➖➖➖➖➖➖➖\n\n"
             final_text += votes_text
+        if has_ban_history:
+            if has_restrictions or has_votes:
+                final_text += "➖➖➖➖➖➖➖➖➖\n\n"
+            final_text += ban_history_text
 
     await update.message.reply_text(final_text.strip())
 
@@ -441,6 +618,9 @@ async def cleanup_old_votes(context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     """Запуск бота"""
     logger.info("Запуск бота...")
+
+    # Загружаем все данные из файла
+    load_data()
 
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
