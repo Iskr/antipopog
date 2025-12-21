@@ -67,27 +67,74 @@ DATA_FILE = Path(__file__).parent / "ban_data.json"  # Файл для хран�
 ban_history: Dict[int, Dict[int, Dict]] = defaultdict(dict)
 
 
-def load_ban_data() -> None:
-    """Загрузка данных о банах из файла"""
-    global ban_history
+def load_data() -> None:
+    """Загрузка всех данных из файла"""
+    global ban_history, votes, vote_cooldowns
     try:
         if DATA_FILE.exists():
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # Конвертируем ключи из строк в int (JSON сохраняет ключи как строки)
+
+                # Загружаем историю банов
                 for chat_id_str, users in data.get('ban_history', {}).items():
                     chat_id = int(chat_id_str)
                     for user_id_str, user_data in users.items():
                         user_id = int(user_id_str)
                         ban_history[chat_id][user_id] = user_data
-            logger.info(f"Загружены данные о банах из {DATA_FILE}")
+
+                # Загружаем голоса (с конвертацией datetime)
+                for chat_id_str, targets in data.get('votes', {}).items():
+                    chat_id = int(chat_id_str)
+                    for target_id_str, vote_types in targets.items():
+                        target_id = int(target_id_str)
+                        for vote_type in ['tishe', 'zaebal']:
+                            if vote_type in vote_types:
+                                for voter_id_str, timestamp_str in vote_types[vote_type].items():
+                                    voter_id = int(voter_id_str)
+                                    timestamp = datetime.fromisoformat(timestamp_str)
+                                    votes[chat_id][target_id][vote_type][voter_id] = timestamp
+
+                # Загружаем кулдауны (с конвертацией ключей и datetime)
+                for chat_id_str, cooldowns in data.get('vote_cooldowns', {}).items():
+                    chat_id = int(chat_id_str)
+                    for key_str, timestamp_str in cooldowns.items():
+                        # Ключ в формате "voter_id:target_id:vote_type"
+                        parts = key_str.split(':')
+                        voter_id = int(parts[0])
+                        target_id = int(parts[1])
+                        vote_type = parts[2]
+                        timestamp = datetime.fromisoformat(timestamp_str)
+                        vote_cooldowns[chat_id][(voter_id, target_id, vote_type)] = timestamp
+
+            logger.info(f"Загружены данные из {DATA_FILE}")
     except Exception as e:
-        logger.error(f"Ошибка при загрузке данных о банах: {e}")
+        logger.error(f"Ошибка при загрузке данных: {e}")
 
 
-def save_ban_data() -> None:
-    """Сохранение данных о банах в файл"""
+def save_data() -> None:
+    """Сохранение всех данных в файл"""
     try:
+        # Подготавливаем голоса для сериализации
+        votes_serializable = {}
+        for chat_id, targets in votes.items():
+            votes_serializable[str(chat_id)] = {}
+            for target_id, vote_types in targets.items():
+                votes_serializable[str(chat_id)][str(target_id)] = {}
+                for vote_type in ['tishe', 'zaebal']:
+                    if vote_types.get(vote_type):
+                        votes_serializable[str(chat_id)][str(target_id)][vote_type] = {
+                            str(voter_id): timestamp.isoformat()
+                            for voter_id, timestamp in vote_types[vote_type].items()
+                        }
+
+        # Подготавливаем кулдауны для сериализации
+        cooldowns_serializable = {}
+        for chat_id, cooldowns in vote_cooldowns.items():
+            cooldowns_serializable[str(chat_id)] = {}
+            for (voter_id, target_id, vote_type), timestamp in cooldowns.items():
+                key = f"{voter_id}:{target_id}:{vote_type}"
+                cooldowns_serializable[str(chat_id)][key] = timestamp.isoformat()
+
         data = {
             'ban_history': {
                 str(chat_id): {
@@ -95,13 +142,15 @@ def save_ban_data() -> None:
                     for user_id, user_data in users.items()
                 }
                 for chat_id, users in ban_history.items()
-            }
+            },
+            'votes': votes_serializable,
+            'vote_cooldowns': cooldowns_serializable
         }
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info(f"Данные о банах сохранены в {DATA_FILE}")
+        logger.info(f"Данные сохранены в {DATA_FILE}")
     except Exception as e:
-        logger.error(f"Ошибка при сохранении данных о банах: {e}")
+        logger.error(f"Ошибка при сохранении данных: {e}")
 
 
 def get_ban_count(chat_id: int, user_id: int) -> int:
@@ -118,7 +167,7 @@ def increment_ban_count(chat_id: int, user_id: int, username: str) -> int:
 
     ban_history[chat_id][user_id]['count'] += 1
     ban_history[chat_id][user_id]['username'] = username  # Обновляем имя
-    save_ban_data()
+    save_data()
     return ban_history[chat_id][user_id]['count']
 
 
@@ -236,6 +285,9 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     # Устанавливаем кулдаун при голосовании
     vote_cooldowns[chat_id][cooldown_key] = now
+
+    # Сохраняем данные
+    save_data()
 
     vote_count = len(votes[chat_id][target_user_id]['tishe'])
     logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
@@ -368,6 +420,9 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Устанавливаем кулдаун при голосовании
     vote_cooldowns[chat_id][cooldown_key] = now
+
+    # Сохраняем данные
+    save_data()
 
     vote_count = len(votes[chat_id][target_user_id]['zaebal'])
     logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
@@ -564,8 +619,8 @@ def main() -> None:
     """Запуск бота"""
     logger.info("Запуск бота...")
 
-    # Загружаем данные о банах из файла
-    load_ban_data()
+    # Загружаем все данные из файла
+    load_data()
 
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
