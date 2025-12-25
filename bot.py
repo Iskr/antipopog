@@ -50,15 +50,11 @@ votes: Dict[int, Dict[int, Dict[str, Dict[int, datetime]]]] = defaultdict(
 # Хранилище активных ограничений: {chat_id: {user_id: {'type': str, 'until': datetime}}}
 restrictions: Dict[int, Dict[int, Dict]] = defaultdict(dict)
 
-# Хранилище кулдаунов голосования: {chat_id: {(voter_id, target_id, vote_type): datetime}}
-vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
-
 # Константы
 TISHE_VOTES_REQUIRED = 5  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
 RESTRICTION_DURATION = timedelta(hours=3)  # Базовая длительность ограничения
 VOTE_EXPIRATION = timedelta(hours=24)  # Время жизни голоса (сутки)
-VOTE_COOLDOWN = timedelta(hours=1)  # Кулдаун между голосами одного пользователя против другого
 BAN_INCREMENT = timedelta(minutes=5)  # Увеличение времени бана за каждый предыдущий бан
 DATA_FILE = Path(__file__).parent / "ban_data.json"  # Файл для хранения данных
 
@@ -69,7 +65,7 @@ ban_history: Dict[int, Dict[int, Dict]] = defaultdict(dict)
 
 def load_data() -> None:
     """Загрузка всех данных из файла"""
-    global ban_history, votes, vote_cooldowns
+    global ban_history, votes
     try:
         if DATA_FILE.exists():
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
@@ -94,18 +90,6 @@ def load_data() -> None:
                                     timestamp = datetime.fromisoformat(timestamp_str)
                                     votes[chat_id][target_id][vote_type][voter_id] = timestamp
 
-                # Загружаем кулдауны (с конвертацией ключей и datetime)
-                for chat_id_str, cooldowns in data.get('vote_cooldowns', {}).items():
-                    chat_id = int(chat_id_str)
-                    for key_str, timestamp_str in cooldowns.items():
-                        # Ключ в формате "voter_id:target_id:vote_type"
-                        parts = key_str.split(':')
-                        voter_id = int(parts[0])
-                        target_id = int(parts[1])
-                        vote_type = parts[2]
-                        timestamp = datetime.fromisoformat(timestamp_str)
-                        vote_cooldowns[chat_id][(voter_id, target_id, vote_type)] = timestamp
-
             logger.info(f"Загружены данные из {DATA_FILE}")
     except Exception as e:
         logger.error(f"Ошибка при загрузке данных: {e}")
@@ -127,14 +111,6 @@ def save_data() -> None:
                             for voter_id, timestamp in vote_types[vote_type].items()
                         }
 
-        # Подготавливаем кулдауны для сериализации
-        cooldowns_serializable = {}
-        for chat_id, cooldowns in vote_cooldowns.items():
-            cooldowns_serializable[str(chat_id)] = {}
-            for (voter_id, target_id, vote_type), timestamp in cooldowns.items():
-                key = f"{voter_id}:{target_id}:{vote_type}"
-                cooldowns_serializable[str(chat_id)][key] = timestamp.isoformat()
-
         data = {
             'ban_history': {
                 str(chat_id): {
@@ -143,8 +119,7 @@ def save_data() -> None:
                 }
                 for chat_id, users in ban_history.items()
             },
-            'votes': votes_serializable,
-            'vote_cooldowns': cooldowns_serializable
+            'votes': votes_serializable
         }
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -205,8 +180,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 Правила:
 • Базовое ограничение: 3 часа
 • Каждый следующий бан: +5 минут к времени
-• Голоса сгорают через 24 часа, если не набран порог
-• Кулдаун 1 час после голосования, сбрасывается при успешном мьюте
+• Голоса живут 24 часа (повторный голос продлевает)
 • Нельзя голосовать за администраторов
     """
     await update.message.reply_text(help_text)
@@ -259,48 +233,28 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"❌ Нельзя голосовать за администраторов!")
         return
 
-    # Проверяем кулдаун голосования для /tishe
-    cooldown_key = (voter_id, target_user_id, 'tishe')
-    if cooldown_key in vote_cooldowns[chat_id]:
-        last_vote_time = vote_cooldowns[chat_id][cooldown_key]
-        time_left = VOTE_COOLDOWN - (now - last_vote_time)
-        if time_left.total_seconds() > 0:
-            minutes = int(time_left.total_seconds() // 60)
-            await update.message.reply_text(
-                f"⏳ Вы уже голосовали /tishe за {target_username}. "
-                f"Подождите ещё {minutes} мин."
-            )
-            return
-
     # Очищаем просроченные голоса
     cleanup_expired_votes(chat_id, target_user_id, 'tishe')
 
     # Проверяем, не голосовал ли уже этот пользователь
-    if voter_id in votes[chat_id][target_user_id]['tishe']:
-        await update.message.reply_text("⚠️ Вы уже голосовали!")
-        return
+    already_voted = voter_id in votes[chat_id][target_user_id]['tishe']
 
-    # Добавляем голос с временной меткой
+    # Добавляем или обновляем голос (продлеваем на сутки)
     votes[chat_id][target_user_id]['tishe'][voter_id] = now
-
-    # Устанавливаем кулдаун при голосовании
-    vote_cooldowns[chat_id][cooldown_key] = now
 
     # Сохраняем данные
     save_data()
 
     vote_count = len(votes[chat_id][target_user_id]['tishe'])
-    logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
+
+    if already_voted:
+        logger.info(f"Голос /tishe от {voter_id} за {target_user_id} продлён. Всего голосов: {vote_count}")
+    else:
+        logger.info(f"Голос /tishe от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= TISHE_VOTES_REQUIRED:
         try:
-            # Сбрасываем кулдаун для всех кто голосовал (награда за успешный мьют)
-            for voted_user_id in votes[chat_id][target_user_id]['tishe'].keys():
-                cooldown_key_for_voter = (voted_user_id, target_user_id, 'tishe')
-                if cooldown_key_for_voter in vote_cooldowns[chat_id]:
-                    del vote_cooldowns[chat_id][cooldown_key_for_voter]
-
             # Увеличиваем счётчик банов и получаем длительность
             ban_count = increment_ban_count(chat_id, target_user_id, target_username)
             restriction_duration = get_restriction_duration(ban_count)
@@ -366,9 +320,14 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "Убедитесь, что бот является администратором с правами на ограничение пользователей."
             )
     else:
-        await update.message.reply_text(
-            f"🔕 Голос учтён! {vote_count}/{TISHE_VOTES_REQUIRED} для запрета медиа"
-        )
+        if already_voted:
+            await update.message.reply_text(
+                f"🔄 Голос продлён! {vote_count}/{TISHE_VOTES_REQUIRED} для запрета медиа"
+            )
+        else:
+            await update.message.reply_text(
+                f"🔕 Голос учтён! {vote_count}/{TISHE_VOTES_REQUIRED} для запрета медиа"
+            )
 
 
 async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -394,48 +353,28 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"❌ Нельзя голосовать за администраторов!")
         return
 
-    # Проверяем кулдаун голосования для /zaebal
-    cooldown_key = (voter_id, target_user_id, 'zaebal')
-    if cooldown_key in vote_cooldowns[chat_id]:
-        last_vote_time = vote_cooldowns[chat_id][cooldown_key]
-        time_left = VOTE_COOLDOWN - (now - last_vote_time)
-        if time_left.total_seconds() > 0:
-            minutes = int(time_left.total_seconds() // 60)
-            await update.message.reply_text(
-                f"⏳ Вы уже голосовали /zaebal за {target_username}. "
-                f"Подождите ещё {minutes} мин."
-            )
-            return
-
     # Очищаем просроченные голоса
     cleanup_expired_votes(chat_id, target_user_id, 'zaebal')
 
     # Проверяем, не голосовал ли уже этот пользователь
-    if voter_id in votes[chat_id][target_user_id]['zaebal']:
-        await update.message.reply_text("⚠️ Вы уже голосовали!")
-        return
+    already_voted = voter_id in votes[chat_id][target_user_id]['zaebal']
 
-    # Добавляем голос с временной меткой
+    # Добавляем или обновляем голос (продлеваем на сутки)
     votes[chat_id][target_user_id]['zaebal'][voter_id] = now
-
-    # Устанавливаем кулдаун при голосовании
-    vote_cooldowns[chat_id][cooldown_key] = now
 
     # Сохраняем данные
     save_data()
 
     vote_count = len(votes[chat_id][target_user_id]['zaebal'])
-    logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
+
+    if already_voted:
+        logger.info(f"Голос /zaebal от {voter_id} за {target_user_id} продлён. Всего голосов: {vote_count}")
+    else:
+        logger.info(f"Голос /zaebal от {voter_id} за {target_user_id}. Всего голосов: {vote_count}")
 
     # Проверяем, достигнут ли порог
     if vote_count >= ZAEBAL_VOTES_REQUIRED:
         try:
-            # Сбрасываем кулдаун для всех кто голосовал (награда за успешный мьют)
-            for voted_user_id in votes[chat_id][target_user_id]['zaebal'].keys():
-                cooldown_key_for_voter = (voted_user_id, target_user_id, 'zaebal')
-                if cooldown_key_for_voter in vote_cooldowns[chat_id]:
-                    del vote_cooldowns[chat_id][cooldown_key_for_voter]
-
             # Увеличиваем счётчик банов и получаем длительность
             ban_count = increment_ban_count(chat_id, target_user_id, target_username)
             restriction_duration = get_restriction_duration(ban_count)
@@ -501,9 +440,14 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "Убедитесь, что бот является администратором с правами на ограничение пользователей."
             )
     else:
-        await update.message.reply_text(
-            f"🔇 Голос учтён! {vote_count}/{ZAEBAL_VOTES_REQUIRED} для полного мьюта"
-        )
+        if already_voted:
+            await update.message.reply_text(
+                f"🔄 Голос продлён! {vote_count}/{ZAEBAL_VOTES_REQUIRED} для полного мьюта"
+            )
+        else:
+            await update.message.reply_text(
+                f"🔇 Голос учтён! {vote_count}/{ZAEBAL_VOTES_REQUIRED} для полного мьюта"
+            )
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
