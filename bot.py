@@ -57,7 +57,7 @@ vote_cooldowns: Dict[int, Dict[tuple, datetime]] = defaultdict(dict)
 TISHE_VOTES_REQUIRED = 5  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
 RESTRICTION_DURATION = timedelta(hours=3)  # Базовая длительность ограничения
-VOTE_EXPIRATION = timedelta(hours=6)  # Время жизни голоса
+VOTE_EXPIRATION = timedelta(hours=24)  # Время жизни голоса (сутки)
 VOTE_COOLDOWN = timedelta(hours=1)  # Кулдаун между голосами одного пользователя против другого
 BAN_INCREMENT = timedelta(minutes=5)  # Увеличение времени бана за каждый предыдущий бан
 DATA_FILE = Path(__file__).parent / "ban_data.json"  # Файл для хранения данных
@@ -205,7 +205,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 Правила:
 • Базовое ограничение: 3 часа
 • Каждый следующий бан: +5 минут к времени
-• Голоса сгорают через 6 часов, если не набран порог
+• Голоса сгорают через 24 часа, если не набран порог
 • Кулдаун 1 час после голосования, сбрасывается при успешном мьюте
 • Нельзя голосовать за администраторов
     """
