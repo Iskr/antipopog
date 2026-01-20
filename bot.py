@@ -50,6 +50,9 @@ votes: Dict[int, Dict[int, Dict[str, Dict[int, datetime]]]] = defaultdict(
 # Хранилище активных ограничений: {chat_id: {user_id: {'type': str, 'until': datetime}}}
 restrictions: Dict[int, Dict[int, Dict]] = defaultdict(dict)
 
+# Хранилище ID статусных сообщений для удаления предыдущих: {chat_id: {target_user_id: {'tishe': message_id, 'zaebal': message_id}}}
+status_messages: Dict[int, Dict[int, Dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
+
 # Константы
 TISHE_VOTES_REQUIRED = 5  # Количество голосов для запрета медиа
 ZAEBAL_VOTES_REQUIRED = 5  # Количество голосов для полного мьюта
@@ -289,6 +292,18 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Очищаем голоса
             del votes[chat_id][target_user_id]
 
+            # Удаляем последнее статусное сообщение и очищаем status_messages
+            if target_user_id in status_messages[chat_id]:
+                if 'tishe' in status_messages[chat_id][target_user_id]:
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=chat_id,
+                            message_id=status_messages[chat_id][target_user_id]['tishe']
+                        )
+                    except Exception:
+                        pass
+                del status_messages[chat_id][target_user_id]
+
             # Форматируем длительность
             hours = int(restriction_duration.total_seconds() // 3600)
             minutes = int((restriction_duration.total_seconds() % 3600) // 60)
@@ -320,14 +335,28 @@ async def tishe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "Убедитесь, что бот является администратором с правами на ограничение пользователей."
             )
     else:
+        # Удаляем предыдущее статусное сообщение, если есть
+        if 'tishe' in status_messages[chat_id][target_user_id]:
+            try:
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=status_messages[chat_id][target_user_id]['tishe']
+                )
+            except Exception as e:
+                logger.debug(f"Не удалось удалить старое статусное сообщение: {e}")
+
+        # Отправляем новое статусное сообщение
         if already_voted:
-            await update.message.reply_text(
+            status_msg = await update.message.reply_text(
                 f"🔄 Голос продлён! {vote_count}/{TISHE_VOTES_REQUIRED} для запрета медиа"
             )
         else:
-            await update.message.reply_text(
+            status_msg = await update.message.reply_text(
                 f"🔕 Голос учтён! {vote_count}/{TISHE_VOTES_REQUIRED} для запрета медиа"
             )
+
+        # Сохраняем ID нового сообщения
+        status_messages[chat_id][target_user_id]['tishe'] = status_msg.message_id
 
 
 async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -409,6 +438,18 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Очищаем голоса
             del votes[chat_id][target_user_id]
 
+            # Удаляем последнее статусное сообщение и очищаем status_messages
+            if target_user_id in status_messages[chat_id]:
+                if 'zaebal' in status_messages[chat_id][target_user_id]:
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=chat_id,
+                            message_id=status_messages[chat_id][target_user_id]['zaebal']
+                        )
+                    except Exception:
+                        pass
+                del status_messages[chat_id][target_user_id]
+
             # Форматируем длительность
             hours = int(restriction_duration.total_seconds() // 3600)
             minutes = int((restriction_duration.total_seconds() % 3600) // 60)
@@ -440,14 +481,28 @@ async def zaebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "Убедитесь, что бот является администратором с правами на ограничение пользователей."
             )
     else:
+        # Удаляем предыдущее статусное сообщение, если есть
+        if 'zaebal' in status_messages[chat_id][target_user_id]:
+            try:
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=status_messages[chat_id][target_user_id]['zaebal']
+                )
+            except Exception as e:
+                logger.debug(f"Не удалось удалить старое статусное сообщение: {e}")
+
+        # Отправляем новое статусное сообщение
         if already_voted:
-            await update.message.reply_text(
+            status_msg = await update.message.reply_text(
                 f"🔄 Голос продлён! {vote_count}/{ZAEBAL_VOTES_REQUIRED} для полного мьюта"
             )
         else:
-            await update.message.reply_text(
+            status_msg = await update.message.reply_text(
                 f"🔇 Голос учтён! {vote_count}/{ZAEBAL_VOTES_REQUIRED} для полного мьюта"
             )
+
+        # Сохраняем ID нового сообщения
+        status_messages[chat_id][target_user_id]['zaebal'] = status_msg.message_id
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
